@@ -1,0 +1,43 @@
+version: "3"
+
+services:
+
+  # ── FastAPI management app ─────────────────────────────────────────────────
+  app:
+    build: .
+    container_name: lb_app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - NGINX_MODE=true   # local docker-compose: nginx sidecar is present
+    volumes:
+      # Docker socket – lets the app exec `nginx -s reload` in the nginx container
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared nginx config directory (app writes here, nginx reads from here)
+      - ./nginx/conf.d:/nginx_conf
+      # Persistent node list
+      - ./data:/app/data
+    depends_on:
+      - nginx
+    networks:
+      - lb_net
+
+  # ── nginx load balancer ────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_lb          # must match NGINX_CONTAINER_NAME in main.py
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      # Same bind-mount as above – nginx reads config from here
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro    # Allows nginx to reach services on the host via host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - lb_net
+
+networks:
+  lb_net:
+    driver: bridge

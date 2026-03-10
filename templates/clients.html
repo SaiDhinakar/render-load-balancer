@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nginx lb</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    body { font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace; }
+  </style>
+</head>
+<body class="bg-[#0d0d0d] text-[#e2e2e2] min-h-screen text-sm">
+
+<div x-data="lb()" x-init="init()" @keydown.window.escape="toast.show=false">
+
+  <!-- Toast -->
+  <div x-show="toast.show" x-transition.opacity x-cloak
+    :class="toast.ok ? 'text-emerald-400 border-emerald-800' : 'text-red-400 border-red-800'"
+    class="fixed top-4 right-4 z-50 border bg-[#111] px-4 py-2 text-xs"
+    x-text="toast.msg">
+  </div>
+
+  <!-- Top bar -->
+  <div class="border-b border-[#1f1f1f] px-6 py-3 flex items-center justify-between">
+    <span class="text-[#888] text-xs tracking-widest uppercase">nginx load balancer</span>
+    <button @click="reloadNginx()" :disabled="reloading"
+      class="text-xs px-3 py-1 border border-[#2a2a2a] text-[#aaa] hover:border-[#444] hover:text-white disabled:opacity-30 transition-colors">
+      <span x-text="reloading ? 'reloading...' : '↺ reload lb'"></span>
+    </button>
+  </div>
+
+  <div class="max-w-3xl mx-auto px-6 py-10 space-y-10">
+
+    <!-- Add node -->
+    <div>
+      <div class="text-[#555] text-xs mb-3 uppercase tracking-widest">add node</div>
+      <div class="flex gap-2">
+        <input x-model="newUrl" @keydown.enter="addNode()" type="text"
+          placeholder="host:port  or  https://domain.com"
+          class="flex-1 bg-transparent border border-[#2a2a2a] px-3 py-2 text-[#e2e2e2] placeholder-[#444] focus:outline-none focus:border-[#555] text-xs" />
+        <button @click="addNode()" :disabled="adding || !newUrl.trim()"
+          class="px-4 py-2 border border-[#2a2a2a] text-[#aaa] hover:border-[#555] hover:text-white disabled:opacity-30 transition-colors text-xs">
+          <span x-text="adding ? '...' : '+ add'"></span>
+        </button>
+      </div>
+      <p class="mt-2 text-[#444] text-xs">accepts: <span class="text-[#666]">host:port</span> · <span class="text-[#666]">http://host:port</span> · <span class="text-[#666]">https://domain.com</span></p>
+    </div>
+
+    <!-- Node list -->
+    <div>
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-[#555] text-xs uppercase tracking-widest">nodes
+          <span x-show="nodes.length" x-text="`(${nodes.length})`" class="ml-1 text-[#444]"></span>
+        </span>
+      </div>
+
+      <div x-show="nodes.length === 0" class="text-[#444] text-xs py-4">
+        no nodes configured
+      </div>
+
+      <div class="divide-y divide-[#1a1a1a]">
+        <template x-for="(node, i) in nodes" :key="node">
+          <div class="flex items-center justify-between py-2.5 group">
+            <div class="flex items-center gap-3">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0"></span>
+              <span class="text-[#ccc]" x-text="node"></span>
+            </div>
+            <button @click="removeNode(i)"
+              class="text-[#333] hover:text-red-500 transition-colors text-xs opacity-0 group-hover:opacity-100">
+              remove
+            </button>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Logs -->
+    <div>
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-[#555] text-xs uppercase tracking-widest">nginx logs</span>
+        <div class="flex items-center gap-4">
+          <span class="text-[#444] text-xs" x-text="logStatus"></span>
+          <label class="flex items-center gap-1.5 text-[#555] text-xs cursor-pointer">
+            <input type="checkbox" x-model="autoRefresh" @change="toggleAutoRefresh()" class="accent-emerald-500" />
+            auto
+          </label>
+          <button @click="fetchLogs()" class="text-[#555] hover:text-[#aaa] text-xs transition-colors">refresh</button>
+        </div>
+      </div>
+      <textarea x-ref="logsBox" readonly
+        class="w-full h-64 bg-[#080808] border border-[#1a1a1a] p-3 text-[#4ade80] text-xs resize-y focus:outline-none leading-relaxed"
+        placeholder="waiting for logs..."></textarea>
+    </div>
+
+  </div>
+</div>
+
+<script>
+function lb() {
+  return {
+    nodes:       {{ nodes | tojson }},
+    newUrl:      '',
+    adding:      false,
+    reloading:   false,
+    autoRefresh: true,
+    logStatus:   '',
+    logTimer:    null,
+    toast:       { show: false, msg: '', ok: true, _t: null },
+
+    init() {
+      this.fetchLogs();
+      this.toggleAutoRefresh();
+    },
+
+    notify(msg, ok = true) {
+      clearTimeout(this.toast._t);
+      this.toast = { show: true, msg, ok, _t: setTimeout(() => this.toast.show = false, 3000) };
+    },
+
+    async addNode() {
+      const url = this.newUrl.trim();
+      if (!url || this.adding) return;
+      this.adding = true;
+      try {
+        const r = await fetch('/nodes', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail);
+        this.nodes = d.nodes;
+        this.newUrl = '';
+        this.notify(`${url} added`);
+        this.fetchLogs();
+      } catch (e) { this.notify(e.message, false); }
+      finally     { this.adding = false; }
+    },
+
+    async removeNode(i) {
+      const label = this.nodes[i];
+      try {
+        const r = await fetch(`/nodes/${i}`, { method: 'DELETE' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail);
+        this.nodes = d.nodes;
+        this.notify(`${label} removed`);
+        this.fetchLogs();
+      } catch (e) { this.notify(e.message, false); }
+    },
+
+    async reloadNginx() {
+      if (this.reloading) return;
+      this.reloading = true;
+      try {
+        const r = await fetch('/reload', { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail);
+        this.notify('nginx reloaded');
+        this.fetchLogs();
+      } catch (e) { this.notify(e.message, false); }
+      finally     { this.reloading = false; }
+    },
+
+    async fetchLogs() {
+      try {
+        const r = await fetch('/logs');
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail);
+        const box = this.$refs.logsBox;
+        box.value = d.logs || '(empty)';
+        box.scrollTop = box.scrollHeight;
+        this.logStatus = new Date().toLocaleTimeString();
+      } catch (e) { this.logStatus = e.message; }
+    },
+
+    toggleAutoRefresh() {
+      clearInterval(this.logTimer);
+      if (this.autoRefresh) this.logTimer = setInterval(() => this.fetchLogs(), 5000);
+    },
+  };
+}
+</script>
+</body>
+</html>
