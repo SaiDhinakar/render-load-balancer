@@ -250,8 +250,13 @@ class NodeIn(BaseModel):
 @app.get("/")
 def index(request: Request):
     nodes = load_nodes()
+
     return templates.TemplateResponse(
-        "clients.html", {"request": request, "nodes": nodes}
+        request=request,
+        name="clients.html",
+        context={
+            "nodes": nodes
+        }
     )
 
 
